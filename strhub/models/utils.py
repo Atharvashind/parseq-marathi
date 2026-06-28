@@ -70,115 +70,221 @@ def get_pretrained_weights(experiment):
     return torch.hub.load_state_dict_from_url(url=url, map_location='cpu', check_hash=True)
 
 
+def _extract_state_dict(checkpoint: dict) -> dict:
+    """Extract a plain ``state_dict`` from any common checkpoint format.
+
+    Handles three layouts seen in the wild:
+
+    * **Plain state dict** – the file *is* the state dict (keys are parameter
+      names mapping directly to tensors).  Used by the official PARSeq weights
+      downloaded via ``get_pretrained_weights()``.
+    * **PyTorch Lightning checkpoint** – a dict that contains a ``"state_dict"``
+      key alongside trainer metadata (``epoch``, ``global_step``, …).
+    * **Generic model checkpoint** – a dict that contains a ``"model"`` key
+      (common in many custom training scripts).
+
+    Parameters
+    ----------
+    checkpoint:
+        The raw object returned by ``torch.hub.load_state_dict_from_url`` or
+        ``torch.load``.
+
+    Returns
+    -------
+    A flat dict mapping parameter names → tensors, ready for key comparison.
+    """
+    if 'state_dict' in checkpoint:
+        return checkpoint['state_dict']
+    if 'model' in checkpoint:
+        return checkpoint['model']
+    # Assume it is already a plain state dict.
+    return checkpoint
+
+
+def _strip_prefix(state_dict: dict, prefixes: tuple[str, ...] = ('model.', 'module.')) -> dict:
+    """Remove well-known wrapper prefixes from checkpoint keys.
+
+    Checkpoint keys sometimes carry a leading ``model.`` (from a
+    ``LightningModule`` that wraps an inner ``nn.Module``) or ``module.``
+    (from ``DataParallel`` / ``DistributedDataParallel``).  Stripping these
+    prefixes normalises the key space so that the checkpoint can be matched
+    against a bare ``nn.Module`` state dict without any manual renaming.
+
+    Only one prefix is stripped per key (the first matching one).  If a key
+    does not start with any of the given prefixes it is returned unchanged.
+
+    Parameters
+    ----------
+    state_dict:
+        Raw checkpoint state dict, potentially containing prefixed keys.
+    prefixes:
+        Tuple of prefix strings to try, in order.  Defaults to the two most
+        common ones: ``'model.'`` and ``'module.'``.
+
+    Returns
+    -------
+    A new dict with prefixes removed where applicable.
+    """
+    stripped: dict = {}
+    for key, value in state_dict.items():
+        new_key = key
+        for prefix in prefixes:
+            if key.startswith(prefix):
+                new_key = key[len(prefix):]
+                break
+        stripped[new_key] = value
+    return stripped
+
+
 def safe_load_pretrained(model: nn.Module, experiment: str) -> dict[str, list[str]]:
     """Load pretrained weights into *model*, skipping any incompatible tensors.
 
-    Standard ``load_state_dict()`` requires every tensor in the checkpoint to
-    match the current model exactly (same key *and* same shape).  This is fine
-    when fine-tuning on the same charset, but fails with a ``RuntimeError`` the
-    moment the output head (classifier) has a different size — which is always
-    the case when adapting a model trained on English (e.g. 94-character vocab)
-    to a multilingual script such as Marathi (Devanagari, ~80+ characters).
+    Motivation — multilingual OCR changes the classifier dimensions
+    --------------------------------------------------------------
+    PARSeq (and the other models in this hub) follow a consistent architecture:
 
-    Why partial loading is safe for multilingual fine-tuning
-    --------------------------------------------------------
-    PARSeq (and the other models in this hub) share the same architecture
-    pattern: a visual encoder + optional language decoder that produce
-    *script-agnostic* feature representations, followed by a thin linear
-    classifier head that maps those features to per-character logits.
+    ``Image → Encoder (ViT backbone) → Decoder (attention) → Head (linear)``
 
-    * **Encoder / decoder weights** – fully reusable.  The visual backbone and
-      attention mechanism learn general image features that transfer across
-      scripts with no modification.
-    * **Classifier head** (``head.weight``, ``head.bias`` in PARSeq; the final
-      linear layer in other models) – *not* reusable when the target charset
-      differs.  Its first dimension equals ``len(charset) + num_special_tokens``
-      and will be a different size for every distinct charset.  Loading these
-      tensors would silently corrupt the model; skipping them lets the head
-      be initialised randomly and learned from scratch during fine-tuning.
+    The **encoder** and **decoder** learn general visual and sequential
+    features that are *script-agnostic* — they transfer well across languages
+    because they capture stroke patterns, spatial relationships, and sequence
+    context that are useful regardless of whether the target script is Latin,
+    Devanagari, or any other writing system.
 
-    Implementation
-    --------------
-    Rather than using ``strict=False`` (which silently ignores *all* missing /
-    unexpected keys and can hide bugs), this function performs explicit,
-    key-by-key shape comparison and only copies tensors that are safe to load.
+    The **classifier head** (``head.weight`` / ``head.bias`` in PARSeq; the
+    final linear projection in ABINet, CRNN, ViTSTR, TRBA) is the only
+    layer tied to the vocabulary size.  Its weight matrix has shape
+    ``(len(charset_train) + num_special_tokens, embed_dim)``.  When the target
+    charset differs from the pretrained charset — e.g. switching from 94
+    English characters to ~80 Devanagari characters — this dimension changes
+    and the tensor **cannot** be reused.
+
+    Why incompatible classifier layers are intentionally skipped
+    ------------------------------------------------------------
+    Forcing a size-mismatched tensor into the model would either raise a
+    ``RuntimeError`` (strict loading) or silently corrupt activations
+    (truncation/padding).  The correct approach for transfer learning is to:
+
+    1. Load the encoder/decoder weights from the source model (same shape).
+    2. Re-initialise the classifier head randomly (new vocab size).
+    3. Fine-tune end-to-end on the target language dataset.
+
+    This is standard practice in cross-lingual OCR and NLP transfer learning.
+
+    Why ``strict=False`` is not used
+    ---------------------------------
+    ``nn.Module.load_state_dict(strict=False)`` silently ignores *all* missing
+    and unexpected keys.  A typo in a layer name, an accidental architecture
+    divergence, or a subtle checkpoint format change would go undetected.
+
+    Instead, this function performs **explicit key-by-key shape comparison**:
+
+    1. Extract the state dict from the checkpoint (supports plain, Lightning,
+       and ``{"model": ...}`` formats).
+    2. Normalise common key prefixes (``model.``, ``module.``).
+    3. Compare each checkpoint key against the current model by shape.
+    4. Build a filtered copy of the current state dict, replacing only
+       shape-compatible tensors.
+    5. Call ``load_state_dict(strict=True)`` on the filtered dict — PyTorch
+       still validates that every key in the model is accounted for.
 
     Parameters
     ----------
     model:
-        The ``nn.Module`` whose weights should be initialised.  For PARSeq this
-        is ``system.model`` (the inner ``nn.Module``); for other systems it is
-        the ``LightningModule`` itself.  See ``train.py`` for the call-site
+        The ``nn.Module`` to initialise.  For PARSeq this is ``system.model``
+        (the inner ``nn.Module``); for other systems it is the
+        ``LightningModule`` itself.  See ``train.py`` for the call-site
         convention.
     experiment:
-        Pretrained model identifier, e.g. ``'parseq'`` or ``'parseq-tiny'``.
+        Pretrained model identifier (e.g. ``'parseq'``, ``'parseq-tiny'``).
         Passed directly to :func:`get_pretrained_weights`.
 
     Returns
     -------
-    dict with three keys:
+    dict with four keys:
 
-    * ``"loaded"``  – keys successfully copied from the checkpoint.
-    * ``"skipped"`` – keys present in the checkpoint but skipped because their
-      tensor shape differs from the current model (typically the classifier head).
-    * ``"missing"`` – keys present in the current model but absent from the
-      checkpoint (e.g. new layers added for the target language).
+    * ``"loaded"``     – keys copied successfully from the checkpoint.
+    * ``"skipped"``    – checkpoint keys skipped due to shape mismatch or
+                          absence from the model (typically the classifier head
+                          when fine-tuning on a different charset).
+    * ``"missing"``    – model keys absent from the checkpoint (new layers not
+                          present in the pretrained weights).
+    * ``"unexpected"`` – checkpoint keys that had no corresponding model key
+                          after prefix normalisation.
     """
-    checkpoint = get_pretrained_weights(experiment)
+    raw_checkpoint = get_pretrained_weights(experiment)
+    # Step 1 — extract a plain state dict from whatever format was loaded.
+    raw_state = _extract_state_dict(raw_checkpoint)
+    # Step 2 — strip common wrapper prefixes so keys match bare nn.Module keys.
+    ckpt_state = _strip_prefix(raw_state)
+
     current_state = model.state_dict()
+    ckpt_keys = set(ckpt_state.keys())
+    model_keys = set(current_state.keys())
 
     loaded: list[str] = []
-    skipped: list[str] = []
-    missing: list[str] = []
+    skipped: list[str] = []      # shape mismatch (present in both, but incompatible)
+    missing: list[str] = []      # in model, absent from checkpoint
+    unexpected: list[str] = []   # in checkpoint, absent from model
 
-    # Build an updated state dict: start from the current model weights so that
-    # any key not present in the checkpoint retains its initialised value.
+    # Step 3 — build a filtered state dict starting from current model weights.
+    # Keys not overwritten will retain their randomly-initialised values.
     updated_state = {k: v.clone() for k, v in current_state.items()}
 
-    for key, ckpt_tensor in checkpoint.items():
+    for key, ckpt_tensor in ckpt_state.items():
         if key not in current_state:
-            # Key exists in checkpoint but not in the current model.
-            # This can happen when loading an older checkpoint after an
-            # architecture refactor; safe to ignore.
-            skipped.append(key)
+            # Present in checkpoint but not in the current model.
+            unexpected.append(key)
             continue
         if ckpt_tensor.shape != current_state[key].shape:
-            # Shape mismatch — almost always the classifier/output head when
-            # the target charset differs from the pretrained charset.
+            # Shape mismatch — almost always the classifier head when the
+            # target charset differs from the pretrained charset.
             skipped.append(key)
             continue
         updated_state[key] = ckpt_tensor
         loaded.append(key)
 
-    # Track keys that are in the current model but were absent from the checkpoint.
-    ckpt_keys = set(checkpoint.keys())
-    for key in current_state:
+    # Collect model keys absent from the (prefix-normalised) checkpoint.
+    for key in model_keys:
         if key not in ckpt_keys:
             missing.append(key)
 
-    # Load with strict=True against the already-filtered state dict so that
-    # PyTorch validates the final result (all remaining keys must match).
+    # Step 4 — strict=True load against the pre-filtered dict.
+    # Every model key is present (unchanged or replaced), so PyTorch's
+    # validation passes while we retain explicit control over what was loaded.
     model.load_state_dict(updated_state, strict=True)
 
-    # ── Summary ──────────────────────────────────────────────────────────────
-    width = 40
-    print('=' * width)
-    print(' Pretrained Loading '.center(width, '='))
-    print('=' * width)
-    print(f'  Loaded layers : {len(loaded)}')
-    print(f'  Skipped layers: {len(skipped)}')
+    # ── Console summary ───────────────────────────────────────────────────────
+    sep = '=' * 48
+    print(sep)
+    print('Safe Pretrained Loading'.center(48))
+    print(sep)
+    print(f'  Checkpoint tensors : {len(ckpt_state)}')
+    print(f'  Model tensors      : {len(current_state)}')
+    print(f'  Loaded             : {len(loaded)}')
+    print(f'  Skipped            : {len(skipped)}')
+    print(f'  Missing            : {len(missing)}')
+    print(f'  Unexpected         : {len(unexpected)}')
     if skipped:
-        print('  Skipped:')
+        print('  Skipped layers:')
         for k in skipped:
             print(f'    {k}')
     if missing:
-        print(f'  Missing layers: {len(missing)}')
+        print('  Missing layers:')
         for k in missing:
             print(f'    {k}')
-    print('  Pretrained initialization completed.')
-    print('=' * width)
+    if unexpected:
+        print('  Unexpected layers:')
+        for k in unexpected:
+            print(f'    {k}')
+    print(sep)
 
-    return {'loaded': loaded, 'skipped': skipped, 'missing': missing}
+    return {
+        'loaded': loaded,
+        'skipped': skipped,
+        'missing': missing,
+        'unexpected': unexpected,
+    }
 
 
 def create_model(experiment: str, pretrained: bool = False, **kwargs):

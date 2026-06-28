@@ -209,66 +209,130 @@ This is always the case when fine-tuning on a different charset (e.g. English
 `len(charset) + num_special_tokens`, so it changes with every distinct
 character set. The encoder, decoder, and all other layers are fully reusable.
 
-### New function: `safe_load_pretrained(model, experiment)`
+### New helpers (private)
 
-Added to `strhub/models/utils.py`.
+#### `_extract_state_dict(checkpoint)`
+Detects and unwraps three common checkpoint formats:
 
-**Algorithm (explicit filtering — no `strict=False`)**
+| Format | Detection | Action |
+|---|---|---|
+| Plain state dict | No `state_dict` or `model` key | Use as-is |
+| PyTorch Lightning | `"state_dict"` key present | Extract `checkpoint["state_dict"]` |
+| Generic wrapper | `"model"` key present | Extract `checkpoint["model"]` |
 
-1. Download the checkpoint via `get_pretrained_weights(experiment)`.
-2. Snapshot the current model's `state_dict()`.
-3. Walk every key in the checkpoint:
-   - key absent from the model → **skipped**
-   - tensor shapes differ → **skipped** (classifier head for multilingual case)
-   - shapes match → **loaded**
-4. Identify keys present in the model but absent from the checkpoint → **missing**.
-5. Merge loaded tensors into a copy of the current state dict (unmatched keys
-   keep their randomly-initialised values).
-6. Call `load_state_dict(updated_state, strict=True)` — PyTorch still
-   validates the final result; no silent failures.
-7. Print a clean summary and return `{"loaded": [...], "skipped": [...], "missing": [...]}`.
+#### `_strip_prefix(state_dict, prefixes)`
+Strips leading `model.` or `module.` from checkpoint keys before matching,
+so checkpoints saved from a `LightningModule` wrapper or `DataParallel` model
+align correctly with a bare `nn.Module` state dict without manual key renaming.
+
+### `safe_load_pretrained(model, experiment)` — updated algorithm
+
+1. Download via `get_pretrained_weights(experiment)`.
+2. **Extract** flat state dict via `_extract_state_dict()`.
+3. **Normalise** key prefixes via `_strip_prefix()`.
+4. Compare every checkpoint key against the current model:
+   - shape matches → **loaded**
+   - shape differs → **skipped** (classifier head for cross-charset case)
+   - absent from model → **unexpected**
+5. Collect model keys absent from checkpoint → **missing**.
+6. Merge loaded tensors into a copy of the current state dict.
+7. `load_state_dict(strict=True)` — PyTorch validates the final result.
+8. Print detailed summary; return all four lists.
 
 **Why `strict=False` is not used**
 
-`strict=False` silently ignores *all* missing and unexpected keys. Using an
-explicit allow-list instead means any unexpected structural difference
-(e.g. a refactored layer name) is visible in the `skipped`/`missing`
-lists rather than hidden.
+`strict=False` silently ignores *all* missing and unexpected keys, hiding
+typos, refactoring errors, and format changes. Explicit filtering surfaces
+every discrepancy in the printed summary while still producing a model that
+PyTorch considers fully valid (`strict=True` on the filtered dict).
+
+### Return value (updated)
+
+```python
+{
+    "loaded":     [...],   # shape-compatible, copied from checkpoint
+    "skipped":    [...],   # shape mismatch (classifier head)
+    "missing":    [...],   # in model, absent from checkpoint
+    "unexpected": [...],   # in checkpoint, absent from model
+}
+```
 
 ### Behaviour by scenario
 
-| Scenario | Loaded | Skipped |
-|---|---|---|
-| English pretrained → English model (same charset) | All layers | 0 |
-| English pretrained → Marathi model (different charset) | Encoder + decoder | `head.weight`, `head.bias` |
+| Scenario | Loaded | Skipped | Missing | Unexpected |
+|---|---|---|---|---|
+| English → English (same charset) | All | 0 | 0 | 0 |
+| English → Marathi (different charset) | Encoder + decoder | `head.weight`, `head.bias` | 0 | 0 |
+| Old checkpoint (missing new layers) | All compatible | 0 | New layer keys | 0 |
+| Lightning ckpt with `model.` prefix | All (after strip) | shape mismatches only | 0 | 0 |
 
-### Changes to `train.py`
-
-- Replaced `from strhub.models.utils import get_pretrained_weights` with
-  `from strhub.models.utils import safe_load_pretrained`.
-- Replaced `m.load_state_dict(get_pretrained_weights(config.pretrained))`
-  with `safe_load_pretrained(m, config.pretrained)`.
-
-### Changes to `create_model()` in `strhub/models/utils.py`
-
-- Replaced `m.load_state_dict(get_pretrained_weights(experiment))` with
-  `safe_load_pretrained(m, experiment)` so the programmatic API
-  (`hubconf.py`, `bench.py`) also benefits from safe loading.
-
-### Console output example (multilingual fine-tuning)
+### Console output (multilingual fine-tuning)
 
 ```
-========================================
-============ Pretrained Loading ========
-========================================
-  Loaded layers : 287
-  Skipped layers: 2
-  Skipped:
+================================================
+           Safe Pretrained Loading
+================================================
+  Checkpoint tensors : 289
+  Model tensors      : 289
+  Loaded             : 287
+  Skipped            : 2
+  Missing            : 0
+  Unexpected         : 0
+  Skipped layers:
     head.weight
     head.bias
-  Pretrained initialization completed.
-========================================
+================================================
 ```
+
+---
+
+## 7. Transfer Learning Support
+
+**Context:** `strhub/models/utils.py`, `train.py`, `configs/charset/marathi.yaml`,
+`configs/dataset/marathi.yaml`
+
+### Overview
+
+The English pretrained PARSeq checkpoint can serve as a strong initialisation
+point for Marathi scene-text recognition, following standard transfer learning
+practice for OCR.
+
+### What transfers
+
+| Component | Transfers? | Reason |
+|---|---|---|
+| ViT encoder (patch embedding + transformer blocks) | ✅ Yes | Learns script-agnostic stroke and spatial features |
+| Autoregressive decoder (attention layers) | ✅ Yes | Sequence modelling is character-system independent |
+| Position embeddings | ✅ Yes | Same image resolution and patch layout |
+| Layer norms, projection layers | ✅ Yes | Same shapes regardless of charset |
+| Classifier head (`head.weight`, `head.bias`) | ❌ No | Output dimension = `len(charset) + specials`; differs per script |
+
+### What is re-initialised
+
+Only the classifier head layers are skipped and re-initialised from scratch
+(random truncated normal, matching `init_weights()`). All other parameters
+start from the English pretrained values and are fine-tuned jointly.
+
+### Training command
+
+```bash
+python train.py \
+  charset=marathi \
+  dataset=marathi \
+  pretrained=parseq
+```
+
+`safe_load_pretrained()` handles the shape mismatch automatically and prints
+a loading summary confirming which layers were transferred and which were skipped.
+
+### Why this works
+
+Transfer learning from Latin-script OCR to Indic scripts is well-established.
+The visual encoder trained on English text images already learns robust
+low-level features (edges, curves, junctions) that are equally relevant for
+Devanagari. Starting from these weights rather than random initialisation
+typically accelerates convergence and improves final accuracy, especially when
+the Marathi training set is smaller than the English one.
 
 ---
 
@@ -280,7 +344,7 @@ lists rather than hidden.
 | `strhub/data/augment.py` | imgaug replaced with NumPy/SciPy; public API unchanged |
 | `train.py` | `summarize` → `ModelSummary`; autocast compat helper; `safe_load_pretrained` |
 | `tune.py` | `gpus` → `accelerator` check; integer precision → `'16-mixed'`; `local_dir` → `storage_path` |
-| `strhub/models/utils.py` | Added `safe_load_pretrained()`; updated `create_model()` |
+| `strhub/models/utils.py` | Added `_extract_state_dict()`, `_strip_prefix()`, improved `safe_load_pretrained()`; updated `create_model()` |
 | `strhub/models/base.py` | Removed `STEP_OUTPUT` import; updated return type annotations |
 | `strhub/models/parseq/system.py` | Removed `STEP_OUTPUT`; `training_step` → `Tensor` |
 | `strhub/models/abinet/system.py` | Removed `STEP_OUTPUT`; `training_step` → `Tensor` |

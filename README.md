@@ -10,28 +10,25 @@
 <div align="center">
 
 # Scene Text Recognition with<br/>Permuted Autoregressive Sequence Models
+### Extended for Marathi (Devanagari) Scene Text Recognition
+
 [![Apache License 2.0](https://img.shields.io/github/license/baudm/parseq)](https://github.com/baudm/parseq/blob/main/LICENSE)
 [![arXiv preprint](http://img.shields.io/badge/arXiv-2207.06966-b31b1b)](https://arxiv.org/abs/2207.06966)
 [![In Proc. ECCV 2022](http://img.shields.io/badge/ECCV-2022-6790ac)](https://www.ecva.net/papers/eccv_2022/papers_ECCV/html/556_ECCV_2022_paper.php)
 [![Gradio demo](https://img.shields.io/badge/%F0%9F%A4%97%20demo-Gradio-ff7c00)](https://huggingface.co/spaces/baudm/PARSeq-OCR)
-
-[![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/scene-text-recognition-with-permuted/scene-text-recognition-on-coco-text)](https://paperswithcode.com/sota/scene-text-recognition-on-coco-text?p=scene-text-recognition-with-permuted)
-[![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/scene-text-recognition-with-permuted/scene-text-recognition-on-ic19-art)](https://paperswithcode.com/sota/scene-text-recognition-on-ic19-art?p=scene-text-recognition-with-permuted)
-[![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/scene-text-recognition-with-permuted/scene-text-recognition-on-icdar2013)](https://paperswithcode.com/sota/scene-text-recognition-on-icdar2013?p=scene-text-recognition-with-permuted)
-[![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/scene-text-recognition-with-permuted/scene-text-recognition-on-iiit5k)](https://paperswithcode.com/sota/scene-text-recognition-on-iiit5k?p=scene-text-recognition-with-permuted)
-[![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/scene-text-recognition-with-permuted/scene-text-recognition-on-cute80)](https://paperswithcode.com/sota/scene-text-recognition-on-cute80?p=scene-text-recognition-with-permuted)
-[![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/scene-text-recognition-with-permuted/scene-text-recognition-on-icdar2015)](https://paperswithcode.com/sota/scene-text-recognition-on-icdar2015?p=scene-text-recognition-with-permuted)
-[![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/scene-text-recognition-with-permuted/scene-text-recognition-on-svt)](https://paperswithcode.com/sota/scene-text-recognition-on-svt?p=scene-text-recognition-with-permuted)
-[![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/scene-text-recognition-with-permuted/scene-text-recognition-on-svtp)](https://paperswithcode.com/sota/scene-text-recognition-on-svtp?p=scene-text-recognition-with-permuted)
 
 [**Darwin Bautista**](https://github.com/baudm) and [**Rowel Atienza**](https://github.com/roatienza)
 
 Electrical and Electronics Engineering Institute<br/>
 University of the Philippines, Diliman
 
-[Method](#method-tldr) | [Sample Results](#sample-results) | [Getting Started](#getting-started) | [FAQ](#frequently-asked-questions) | [Training](#training) | [Evaluation](#evaluation) | [Citation](#citation)
+[Method](#method-tldr) | [Marathi Extension](#marathi-extension) | [Getting Started](#getting-started) | [Training](#training) | [Marathi Training](#marathi-training) | [Evaluation](#evaluation) | [Inference](#inference) | [FAQ](#frequently-asked-questions) | [Citation](#citation)
 
 </div>
+
+> **This fork** extends the official PARSeq repository with full Marathi (Devanagari) scene-text recognition support, NumPy 2.x / PyTorch Lightning 2.x compatibility fixes, safe multilingual weight loading, staged fine-tuning, and evaluation/inference tools. The model architecture, tokenizer, and training loop are **unchanged**. See [`PATCHES.md`](PATCHES.md) for a complete change log.
+
+---
 
 Scene Text Recognition (STR) models use language context to be more robust against noisy or corrupted images. Recent approaches like ABINet use a standalone or external Language Model (LM) for prediction refinement. In this work, we show that the external LM&mdash;which requires upfront allocation of dedicated compute capacity&mdash;is inefficient for STR due to its poor performance vs cost characteristics. We propose a more efficient approach using **p**ermuted **a**uto**r**egressive **seq**uence (PARSeq) models. View our ECCV [poster](https://drive.google.com/file/d/19luOT_RMqmafLMhKQQHBnHNXV7fOCRfw/view) and [presentation](https://drive.google.com/file/d/11VoZW4QC5tbMwVIjKB44447uTiuCJAAD/view) for a brief overview.
 
@@ -47,8 +44,6 @@ Our main insight is that with an ensemble of autoregressive (AR) models, we coul
 A single Transformer can realize different models by merely varying its attention mask. With the correct decoder parameterization, it can be trained with Permutation Language Modeling to enable inference for arbitrary output positions given arbitrary subsets of the input context. This *arbitrary decoding* characteristic results in a _unified_ STR model&mdash;PARSeq&mdash;capable of context-free and context-aware inference, as well as iterative prediction refinement using bidirectional context **without** requiring a standalone language model. PARSeq can be considered an ensemble of AR models with shared architecture and weights:
 
 ![System](.github/system.png)
-**NOTE:** _LayerNorm and Dropout layers are omitted. `[B]`, `[E]`, and `[P]` stand for beginning-of-sequence (BOS), end-of-sequence (EOS), and padding tokens, respectively. `T` = 25 results in 26 distinct position tokens. The position tokens both serve as query vectors and position embeddings for the input context. For `[B]`, no position embedding is added. Attention
-masks are generated from the given permutations and are used only for the context-position attention. L<sub>ce</sub> pertains to the cross-entropy loss._
 
 ### Sample Results
 <div align="center">
@@ -65,205 +60,375 @@ masks are generated from the given permutations and are used only for the contex
 **NOTE:** _Bold letters and underscores indicate wrong and missing character predictions, respectively._
 </div>
 
+---
+
+## Marathi Extension
+
+This fork adds first-class Marathi (Devanagari) support to PARSeq. All changes
+are infrastructure-only — the model architecture, tokenizer, and training loop
+are identical to the upstream repository.
+
+### What was added
+
+| Area | Change |
+|---|---|
+| **Unicode** | NFC normalisation (not NFKD) for non-ASCII charsets; English datasets unchanged |
+| **imgaug removal** | Replaced with NumPy/SciPy equivalents compatible with NumPy 2.x |
+| **LMDB layout** | Flat `root/data.mdb` layout supported alongside the existing tree layout |
+| **Charset** | `configs/charset/marathi.yaml` — full Devanagari inventory |
+| **Dataset config** | `configs/dataset/marathi.yaml` |
+| **Safe weight loading** | `safe_load_pretrained()` skips mismatched classifier layers for cross-charset transfer |
+| **Staged fine-tuning** | Per-component freeze flags + differential learning rates via Hydra config |
+| **Evaluation tool** | `tools/evaluate_marathi.py` — Exact Match, CER, NED, CSV export |
+| **Inference tool** | `tools/infer_marathi.py` — single image or folder, CSV export |
+| **PL 2.x compat** | Removed deprecated `STEP_OUTPUT`, `summarize()`, integer precision, `gpus` flag |
+
+### Charset
+
+The Marathi charset covers the full Devanagari Unicode block used in written Marathi:
+vowels (अ–औ), consonants (क–ह, ळ, क्ष, ज्ञ), dependent vowel signs (मात्रा),
+halant (्), diacritics (anusvara ं, visarga ः, chandrabindu ँ), Devanagari digits (०–९),
+and common punctuation.
+
+---
+
 ## Getting Started
-This repository contains the reference implementation for PARSeq and reproduced models (collectively referred to as _Scene Text Recognition Model Hub_). See `NOTICE` for copyright information.
-Majority of the code is licensed under the Apache License v2.0 (see `LICENSE`) while ABINet and CRNN sources are
-released under the BSD and MIT licenses, respectively (see corresponding `LICENSE` files for details).
 
-### Demo
-An [interactive Gradio demo](https://huggingface.co/spaces/baudm/PARSeq-OCR) hosted at Hugging Face is available. The pretrained weights released here are used for the demo.
+Requires Python ≥ 3.9 and PyTorch ≥ 2.0.
 
-### Installation
-Requires Python >= 3.9 and PyTorch >= 2.0. The default requirements files will install the latest versions of the dependencies (as of February 22, 2024).
 ```bash
 # Use specific platform build. Other PyTorch 2.0 options: cu118, cu121, rocm5.7
 platform=cpu
-# Generate requirements files for specified PyTorch platform
 make torch-${platform}
-# Install the project and core + train + test dependencies. Subsets: [dev,train,test,bench,tune]
 pip install -r requirements/core.${platform}.txt -e .[train,test]
- ```
+```
+
 #### Updating dependency version pins
 ```bash
 pip install pip-tools
-make clean-reqs reqs  # Regenerate all the requirements files
- ```
+make clean-reqs reqs
+```
+
 ### Datasets
+
 Download the [datasets](Datasets.md) from the following links:
 1. [LMDB archives](https://drive.google.com/drive/folders/1NYuoi7dfJVgo-zUJogh8UQZgIMpLviOE) for MJSynth, SynthText, IIIT5k, SVT, SVTP, IC13, IC15, CUTE80, ArT, RCTW17, ReCTS, LSVT, MLT19, COCO-Text, and Uber-Text.
 2. [LMDB archives](https://drive.google.com/drive/folders/1D9z_YJVa6f-O0juni-yG5jcwnhvYw-qC) for TextOCR and OpenVINO.
 
+For Marathi datasets, the expected LMDB layout under `data.root_dir` is:
+
+```
+data/
+  train/
+    marathi/
+      data.mdb        ← single LMDB or subdirectories each with data.mdb
+      lock.mdb
+  val/
+    data.mdb
+    lock.mdb
+  test/
+    data.mdb
+    lock.mdb
+```
+
 ### Pretrained Models via Torch Hub
-Available models are: `abinet`, `crnn`, `trba`, `vitstr`, `parseq_tiny`, `parseq_patch16_224`, and `parseq`.
+
 ```python
 import torch
 from PIL import Image
 from strhub.data.module import SceneTextDataModule
 
-# Load model and image transforms
 parseq = torch.hub.load('baudm/parseq', 'parseq', pretrained=True).eval()
 img_transform = SceneTextDataModule.get_transform(parseq.hparams.img_size)
 
 img = Image.open('/path/to/image.png').convert('RGB')
-# Preprocess. Model expects a batch of images with shape: (B, C, H, W)
 img = img_transform(img).unsqueeze(0)
 
 logits = parseq(img)
-logits.shape  # torch.Size([1, 26, 95]), 94 characters + [EOS] symbol
-
-# Greedy decoding
 pred = logits.softmax(-1)
 label, confidence = parseq.tokenizer.decode(pred)
 print('Decoded label = {}'.format(label[0]))
 ```
 
-## Frequently Asked Questions
-- How do I train on a new language? See Issues [#5](https://github.com/baudm/parseq/issues/5) and [#9](https://github.com/baudm/parseq/issues/9).
-- Can you export to TorchScript or ONNX? Yes, see Issue [#12](https://github.com/baudm/parseq/issues/12#issuecomment-1267842315).
-- How do I test on my own dataset? See Issue [#27](https://github.com/baudm/parseq/issues/27).
-- How do I finetune and/or create a custom dataset? See Issue [#7](https://github.com/baudm/parseq/issues/7).
-- What is `val_NED`? See Issue [#10](https://github.com/baudm/parseq/issues/10).
+---
 
 ## Training
-The training script can train any supported model. You can override any configuration using the command line. Please refer to [Hydra](https://hydra.cc) docs for more info about the syntax. Use `./train.py --help` to see the default configuration.
 
-<details><summary>Sample commands for different training configurations</summary><p>
+The training script can train any supported model. Use `./train.py --help` to see the default configuration.
+
+<details><summary>Sample commands for standard training</summary><p>
 
 ### Finetune using pretrained weights
 ```bash
-./train.py +experiment=parseq-tiny pretrained=parseq-tiny  # Not all experiments have pretrained weights
+./train.py +experiment=parseq-tiny pretrained=parseq-tiny
 ```
 
-### Train a model variant/preconfigured experiment
-The base model configurations are in `configs/model/`, while variations are stored in `configs/experiment/`.
+### Train a model variant
 ```bash
-./train.py +experiment=parseq-tiny  # Some examples: abinet-sv, trbc
+./train.py +experiment=parseq-tiny
 ```
 
-### Specify the character set for training
+### Specify the character set
 ```bash
-./train.py charset=94_full  # Other options: 36_lowercase or 62_mixed-case. See configs/charset/
+./train.py charset=94_full  # Other options: 36_lowercase, 62_mixed-case
 ```
 
 ### Specify the training dataset
 ```bash
-./train.py dataset=real  # Other option: synth. See configs/dataset/
+./train.py dataset=real  # Other option: synth
 ```
 
-### Change general model training parameters
+### Change model parameters
 ```bash
 ./train.py model.img_size=[32, 128] model.max_label_length=25 model.batch_size=384
 ```
 
-### Change data-related training parameters
+### Change data parameters
 ```bash
 ./train.py data.root_dir=data data.num_workers=2 data.augment=true
 ```
 
-### Change `pytorch_lightning.Trainer` parameters
+### Change Trainer parameters
 ```bash
 ./train.py trainer.max_epochs=20 trainer.accelerator=gpu trainer.devices=2
 ```
-Note that you can pass any [Trainer parameter](https://pytorch-lightning.readthedocs.io/en/stable/common/trainer.html),
-you just need to prefix it with `+` if it is not originally specified in `configs/main.yaml`.
 
-### Resume training from checkpoint (experimental)
+### Resume from checkpoint
 ```bash
 ./train.py +experiment=<model_exp> ckpt_path=outputs/<model>/<timestamp>/checkpoints/<checkpoint>.ckpt
 ```
 
 </p></details>
 
+---
+
+## Marathi Training
+
+### Quick start — fine-tune from English pretrained weights
+
+```bash
+python train.py \
+  experiment=finetune_marathi \
+  charset=marathi \
+  dataset=marathi \
+  pretrained=parseq
+```
+
+`safe_load_pretrained()` automatically loads all compatible layers (encoder,
+decoder, position embeddings) and skips only the classifier head, which is
+re-initialised for the Marathi vocab size. A loading summary is printed:
+
+```
+================================================
+        Safe Pretrained Loading
+================================================
+  Checkpoint tensors : 289
+  Model tensors      : 289
+  Loaded             : 287
+  Skipped            : 2
+  Skipped layers:
+    head.weight
+    head.bias
+================================================
+```
+
+### Staged fine-tuning experiments
+
+The `finetune_marathi` experiment config supports three common transfer learning
+strategies via Hydra CLI overrides — no code changes needed.
+
+**Experiment 1 — freeze encoder + decoder, train head only with differential LRs**
+```bash
+python train.py experiment=finetune_marathi charset=marathi dataset=marathi \
+  pretrained=parseq \
+  model.freeze.encoder=true \
+  model.freeze.decoder=true \
+  model.backbone_lr=1e-5 \
+  model.head_lr=5e-4
+```
+
+**Experiment 2 — freeze encoder only**
+```bash
+python train.py experiment=finetune_marathi charset=marathi dataset=marathi \
+  pretrained=parseq \
+  model.freeze.encoder=true \
+  model.freeze.decoder=false
+```
+
+**Experiment 3 — train all layers (standard fine-tuning)**
+```bash
+python train.py charset=marathi dataset=marathi pretrained=parseq
+```
+
+A fine-tuning summary is printed at the start of training:
+
+```
+================================================
+       Fine-tuning Configuration
+================================================
+  Encoder     : Frozen
+  Decoder     : Trainable
+  Head        : Trainable
+  Text Embed  : Trainable
+  Backbone LR : 1e-05
+  Head LR     : 0.0005
+================================================
+```
+
+### Freeze configuration reference
+
+```yaml
+# In your experiment config or as CLI overrides
+model:
+  freeze:
+    encoder:    true   # freeze the ViT backbone
+    decoder:    false  # keep decoder trainable
+    head:       false  # always train (re-initialised for new charset)
+    text_embed: false  # always train (new vocab embeddings)
+
+  backbone_lr: 1.0e-5   # LR for encoder + decoder (when not null)
+  head_lr:     5.0e-4   # LR for head + text_embed (when not null)
+```
+
+If `backbone_lr` and `head_lr` are both `null` (the default), the standard
+single learning-rate optimizer is used unchanged.
+
+---
+
 ## Evaluation
-The test script, ```test.py```, can be used to evaluate any model trained with this project. For more info, see ```./test.py --help```.
 
-PARSeq runtime parameters can be passed using the format `param:type=value`. For example, PARSeq NAR decoding can be invoked via `./test.py parseq.ckpt refine_iters:int=2 decode_ar:bool=false`.
+### Standard English benchmark evaluation
 
-<details><summary>Sample commands for reproducing results</summary><p>
-
-### Lowercase alphanumeric comparison on benchmark datasets (Table 6)
 ```bash
-./test.py outputs/<model>/<timestamp>/checkpoints/last.ckpt  # or use the released weights: ./test.py pretrained=parseq
+./test.py outputs/<model>/<timestamp>/checkpoints/last.ckpt
+# or
+./test.py pretrained=parseq
 ```
+
+### Marathi validation set evaluation
+
+```bash
+python tools/evaluate_marathi.py \
+  --checkpoint outputs/parseq/<timestamp>/checkpoints/best.ckpt \
+  --lmdb_path  data/val \
+  --batch_size 64 \
+  --output     evaluation_predictions.csv
+```
+
 **Sample output:**
-| Dataset   | # samples | Accuracy | 1 - NED | Confidence | Label Length |
-|:---------:|----------:|---------:|--------:|-----------:|-------------:|
-| IIIT5k    |      3000 |    99.00 |   99.79 |      97.09 |         5.09 |
-| SVT       |       647 |    97.84 |   99.54 |      95.87 |         5.86 |
-| IC13_1015 |      1015 |    98.13 |   99.43 |      97.19 |         5.31 |
-| IC15_2077 |      2077 |    89.22 |   96.43 |      91.91 |         5.33 |
-| SVTP      |       645 |    96.90 |   99.36 |      94.37 |         5.86 |
-| CUTE80    |       288 |    98.61 |   99.80 |      96.43 |         5.53 |
-| **Combined** | **7672** | **95.95** | **98.78** | **95.34** | **5.33** |
---------------------------------------------------------------------------
-
-### Benchmark using different evaluation character sets (Table 4)
-```bash
-./test.py outputs/<model>/<timestamp>/checkpoints/last.ckpt  # lowercase alphanumeric (36-character set)
-./test.py outputs/<model>/<timestamp>/checkpoints/last.ckpt --cased  # mixed-case alphanumeric (62-character set)
-./test.py outputs/<model>/<timestamp>/checkpoints/last.ckpt --cased --punctuation  # mixed-case alphanumeric + punctuation (94-character set)
+```
+================================================
+         Evaluation Results
+================================================
+  Samples          : 5000
+  Exact Match Acc  : 82.34 %
+  Character Acc    : 96.12 %
+  CER              :  3.88 %
+  NED              : 94.57 %
+================================================
+Predictions saved to: evaluation_predictions.csv
 ```
 
-### Lowercase alphanumeric comparison on more challenging datasets (Table 5)
+Output CSV columns: `index`, `ground_truth`, `prediction`, `confidence`.
+
+All string comparisons use NFC normalisation (not NFKD) to correctly handle
+Devanagari matras and composed characters.
+
+<details><summary>Standard benchmark commands</summary><p>
+
+### Lowercase alphanumeric comparison (Table 6)
+```bash
+./test.py outputs/<model>/<timestamp>/checkpoints/last.ckpt
+```
+
+### Mixed-case and punctuation
+```bash
+./test.py outputs/<model>/<timestamp>/checkpoints/last.ckpt --cased
+./test.py outputs/<model>/<timestamp>/checkpoints/last.ckpt --cased --punctuation
+```
+
+### New benchmark datasets (Table 5)
 ```bash
 ./test.py outputs/<model>/<timestamp>/checkpoints/last.ckpt --new
 ```
 
-### Benchmark Model Compute Requirements (Figure 5)
+### Benchmark compute requirements
 ```bash
 ./bench.py model=parseq model.decode_ar=false model.refine_iters=3
-<torch.utils.benchmark.utils.common.Measurement object at 0x7f8fcae67ee0>
-model(x)
-  Median: 14.87 ms
-  IQR:    0.33 ms (14.78 to 15.12)
-  7 measurements, 10 runs per measurement, 1 thread
-| module                | #parameters   | #flops   | #activations   |
-|:----------------------|:--------------|:---------|:---------------|
-| model                 | 23.833M       | 3.255G   | 8.214M         |
-|  encoder              |  21.381M      |  2.88G   |  7.127M        |
-|  decoder              |  2.368M       |  0.371G  |  1.078M        |
-|  head                 |  36.575K      |  3.794M  |  9.88K         |
-|  text_embed.embedding |  37.248K      |  0       |  0             |
 ```
 
-### Latency Measurements vs Output Label Length (Appendix I)
+### Orientation robustness
 ```bash
-./bench.py model=parseq model.decode_ar=false model.refine_iters=3 +range=true
+./test.py outputs/<model>/<timestamp>/checkpoints/last.ckpt --rotation 90
+./test.py outputs/<model>/<timestamp>/checkpoints/last.ckpt --rotation 180
+./test.py outputs/<model>/<timestamp>/checkpoints/last.ckpt --rotation 270
 ```
 
-### Orientation robustness benchmark (Appendix J)
-```bash
-./test.py outputs/<model>/<timestamp>/checkpoints/last.ckpt --cased --punctuation  # no rotation
-./test.py outputs/<model>/<timestamp>/checkpoints/last.ckpt --cased --punctuation --rotation 90
-./test.py outputs/<model>/<timestamp>/checkpoints/last.ckpt --cased --punctuation --rotation 180
-./test.py outputs/<model>/<timestamp>/checkpoints/last.ckpt --cased --punctuation --rotation 270
-```
+</p></details>
 
-### Using trained models to read text from images (Appendix L)
-```bash
-./read.py outputs/<model>/<timestamp>/checkpoints/last.ckpt --images demo_images/*  # Or use ./read.py pretrained=parseq
-Additional keyword arguments: {}
-demo_images/art-01107.jpg: CHEWBACCA
-demo_images/coco-1166773.jpg: Chevrol
-demo_images/cute-184.jpg: SALMON
-demo_images/ic13_word_256.png: Verbandsteffe
-demo_images/ic15_word_26.png: Kaopa
-demo_images/uber-27491.jpg: 3rdAve
+---
 
-# use NAR decoding + 2 refinement iterations for PARSeq
+## Inference
+
+### Original inference script (English)
+
+```bash
+./read.py outputs/<model>/<timestamp>/checkpoints/last.ckpt --images demo_images/*
 ./read.py pretrained=parseq refine_iters:int=2 decode_ar:bool=false --images demo_images/*
 ```
-</p></details>
+
+### Marathi inference tool
+
+**Single image**
+```bash
+python tools/infer_marathi.py \
+  --checkpoint best.ckpt \
+  --image      word.jpg
+```
+
+Output:
+```
+Prediction : मराठी
+Confidence : 0.9231
+```
+
+**Folder of images**
+```bash
+python tools/infer_marathi.py \
+  --checkpoint best.ckpt \
+  --folder     images/ \
+  --output     predictions.csv
+```
+
+Output CSV columns: `filename`, `prediction`, `confidence`.
+
+Supported image formats: `.jpg`, `.jpeg`, `.png`, `.bmp`, `.tiff`, `.webp`.
+Images in a folder are processed in alphabetical order.
+
+---
 
 ## Tuning
 
-We use [Ray Tune](https://www.ray.io/ray-tune) for automated parameter tuning of the learning rate. See `./tune.py --help`. Extend `tune.py` to support tuning of other hyperparameters.
 ```bash
-./tune.py tune.num_samples=20  # find optimum LR for PARSeq's default config using 20 trials
-./tune.py +experiment=tune_abinet-lm  # find the optimum learning rate for ABINet's language model
+./tune.py tune.num_samples=20
+./tune.py +experiment=tune_abinet-lm
 ```
 
+---
+
+## Frequently Asked Questions
+
+- How do I train on a new language? See Issues [#5](https://github.com/baudm/parseq/issues/5) and [#9](https://github.com/baudm/parseq/issues/9). For Marathi specifically, see the [Marathi Training](#marathi-training) section above.
+- Can you export to TorchScript or ONNX? Yes, see Issue [#12](https://github.com/baudm/parseq/issues/12#issuecomment-1267842315).
+- How do I test on my own dataset? See Issue [#27](https://github.com/baudm/parseq/issues/27).
+- How do I finetune a custom dataset? See Issue [#7](https://github.com/baudm/parseq/issues/7) and the [Staged Fine-tuning](#staged-fine-tuning-experiments) section above.
+- What is `val_NED`? See Issue [#10](https://github.com/baudm/parseq/issues/10).
+- Why does loading a pretrained checkpoint fail with a shape mismatch? The classifier head size depends on the charset. Use `safe_load_pretrained()` (called automatically via the `pretrained=` flag) which skips incompatible layers instead of failing.
+
+---
+
 ## Citation
+
 ```bibtex
 @InProceedings{bautista2022parseq,
   title={Scene Text Recognition with Permuted Autoregressive Sequence Models},

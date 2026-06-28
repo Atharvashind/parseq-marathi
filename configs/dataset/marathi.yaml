@@ -15,6 +15,6 @@
 # (the dataset loader applies NFC automatically for non-ASCII charsets, so this
 #  is safe to leave at true).
 data:
-  train_dir: marathi
+  train_dir: "."
   remove_whitespace: true
   normalize_unicode: true

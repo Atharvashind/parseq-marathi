@@ -336,6 +336,72 @@ the Marathi training set is smaller than the English one.
 
 ---
 
+## 8. Evaluation and Inference Tools
+
+**New files:** `tools/evaluate_marathi.py`, `tools/infer_marathi.py`
+
+No existing files were modified.
+
+### `tools/evaluate_marathi.py`
+
+Evaluates a checkpoint against any LMDB validation split and writes a CSV.
+
+```bash
+python tools/evaluate_marathi.py \
+    --checkpoint outputs/parseq/best.ckpt \
+    --data_root  data \
+    --lmdb_path  data/val \
+    --batch_size 64 \
+    --output     evaluation_predictions.csv
+```
+
+**What it reuses from the repository**
+- `load_from_checkpoint()` — model loading, hyperparameter recovery
+- `LmdbDataset` — LMDB reading, label filtering
+- `SceneTextDataModule.get_transform()` — image preprocessing pipeline
+- `model.tokenizer.decode()` — sequence decoding (no duplication)
+- `model.charset_adapter` — post-decode character filtering
+
+**Metrics** (all NFC-normalised, not NFKD)
+
+| Metric | Definition |
+|---|---|
+| Exact Match Accuracy | `correct / total × 100` |
+| Character Accuracy | `(1 - CER) × 100`, clamped to 0 |
+| CER | `edit_distance(pred, gt) / len(gt)`, averaged |
+| NED | `1 - mean(edit_distance / max(len(pred), len(gt)))` — ICDAR 2019 |
+
+**Output CSV columns:** `index`, `ground_truth`, `prediction`, `confidence`
+
+---
+
+### `tools/infer_marathi.py`
+
+Runs inference on a single image or every image in a folder.
+
+```bash
+# Single image
+python tools/infer_marathi.py --checkpoint best.ckpt --image word.jpg
+
+# Folder
+python tools/infer_marathi.py --checkpoint best.ckpt --folder images/
+```
+
+**Single-image stdout output**
+
+```
+Prediction : मराठी
+Confidence : 0.9231
+```
+
+**Output CSV columns:** `filename`, `prediction`, `confidence`
+
+Supported extensions: `.jpg`, `.jpeg`, `.png`, `.bmp`, `.tiff`, `.webp`.
+Images in a folder are processed in alphabetical order for reproducibility.
+Predictions are NFC-normalised before printing and saving.
+
+---
+
 ## Summary of Modified Files
 
 | File | Change |
@@ -358,4 +424,6 @@ the Marathi training set is smaller than the English one.
 | `requirements/constraints.txt` | Removed `imgaug` entry; updated `# via` annotations |
 | `configs/charset/marathi.yaml` | **New** — Devanagari charset for Marathi |
 | `configs/dataset/marathi.yaml` | **New** — Marathi dataset config |
+| `tools/evaluate_marathi.py` | **New** — LMDB evaluation with metrics + CSV export |
+| `tools/infer_marathi.py` | **New** — single-image and folder inference + CSV export |
 | `PATCHES.md` | **New** — this file |

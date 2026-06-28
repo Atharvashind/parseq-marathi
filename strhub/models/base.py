@@ -16,7 +16,7 @@
 import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from nltk import edit_distance
 
@@ -27,7 +27,6 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import OneCycleLR
 
 import pytorch_lightning as pl
-from pytorch_lightning.utilities.types import STEP_OUTPUT
 from timm.optim import create_optimizer_v2
 
 from strhub.data.utils import BaseTokenizer, CharsetAdapter, CTCTokenizer, Tokenizer
@@ -44,6 +43,7 @@ class BatchResult:
     loss_numel: int
 
 
+# Type alias for a list of per-step output dicts collected across a validation epoch.
 EPOCH_OUTPUT = list[dict[str, BatchResult]]
 
 
@@ -109,7 +109,7 @@ class BaseSystem(pl.LightningModule, ABC):
     def optimizer_zero_grad(self, epoch: int, batch_idx: int, optimizer: Optimizer) -> None:
         optimizer.zero_grad(set_to_none=True)
 
-    def _eval_step(self, batch, validation: bool) -> Optional[STEP_OUTPUT]:
+    def _eval_step(self, batch, validation: bool) -> Optional[dict[str, Any]]:
         images, labels = batch
 
         correct = 0
@@ -163,7 +163,7 @@ class BaseSystem(pl.LightningModule, ABC):
         loss = total_loss / total_loss_numel
         return acc, ned, loss
 
-    def validation_step(self, batch, batch_idx) -> Optional[STEP_OUTPUT]:
+    def validation_step(self, batch, batch_idx) -> Optional[dict[str, Any]]:
         result = self._eval_step(batch, True)
         self.outputs.append(result)
         return result
@@ -176,7 +176,7 @@ class BaseSystem(pl.LightningModule, ABC):
         self.log('val_loss', loss, sync_dist=True)
         self.log('hp_metric', acc, sync_dist=True)
 
-    def test_step(self, batch, batch_idx) -> Optional[STEP_OUTPUT]:
+    def test_step(self, batch, batch_idx) -> Optional[dict[str, Any]]:
         return self._eval_step(batch, False)
 
 

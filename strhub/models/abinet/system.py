@@ -23,7 +23,6 @@ from torch import Tensor, nn
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import OneCycleLR
 
-from pytorch_lightning.utilities.types import STEP_OUTPUT
 from timm.optim.optim_factory import param_groups_weight_decay
 
 from strhub.models.base import CrossEntropySystem
@@ -177,7 +176,7 @@ class ABINet(CrossEntropySystem):
         lengths = torch.as_tensor(list(map(len, labels)), device=self.device) + 1  # +1 for eos
         return inputs, lengths, targets
 
-    def training_step(self, batch, batch_idx) -> STEP_OUTPUT:
+    def training_step(self, batch, batch_idx) -> Tensor:
         images, labels = batch
         inputs, lengths, targets = self._prepare_inputs_and_targets(labels)
         if self.lm_only:

@@ -23,8 +23,6 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from pytorch_lightning.utilities.types import STEP_OUTPUT
-
 from strhub.models.base import CrossEntropySystem
 
 from .model import PARSeq as Model
@@ -166,7 +164,7 @@ class PARSeq(CrossEntropySystem):
         query_mask = mask[1:, :-1]
         return content_mask, query_mask
 
-    def training_step(self, batch, batch_idx) -> STEP_OUTPUT:
+    def training_step(self, batch, batch_idx) -> Tensor:
         images, labels = batch
         tgt = self.tokenizer.encode(labels, self._device)
 

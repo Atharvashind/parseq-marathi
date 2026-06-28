@@ -137,9 +137,10 @@ def main(config: DictConfig):
         assert config.model.perm_num % 2 == 0, 'perm_num should be even if perm_mirrored = True'
     # Modify config
     with open_dict(config):
-        # Use mixed-precision training
-        if config.trainer.get('gpus', 0):
-            config.trainer.precision = 16
+        # Use mixed-precision training.
+        # PL 2.x uses the string form '16-mixed'; the old integer form (16) is deprecated.
+        if config.trainer.get('accelerator') == 'gpu':
+            config.trainer.precision = '16-mixed'
         # Resolve absolute path to data.root_dir
         config.data.root_dir = hydra.utils.to_absolute_path(config.data.root_dir)
 
@@ -187,7 +188,7 @@ def main(config: DictConfig):
                 name=out_dir.name,
                 stop=MetricTracker('NED', max_t),
                 progress_reporter=reporter,
-                local_dir=str(out_dir.parent.absolute()),
+                storage_path=str(out_dir.parent.absolute()),
             ),
         )
     else:

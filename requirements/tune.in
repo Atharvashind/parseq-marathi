@@ -2,7 +2,6 @@
 
 lmdb
 Pillow
-imgaug
 hydra-core >=1.2.0
 ray[tune] >=2.0.0
 ax-platform

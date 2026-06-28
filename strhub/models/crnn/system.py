@@ -17,8 +17,6 @@ from typing import Optional, Sequence
 
 from torch import Tensor
 
-from pytorch_lightning.utilities.types import STEP_OUTPUT
-
 from strhub.models.base import CTCSystem
 from strhub.models.utils import init_weights
 
@@ -49,7 +47,7 @@ class CRNN(CTCSystem):
     def forward(self, images: Tensor, max_length: Optional[int] = None) -> Tensor:
         return self.model.forward(images)
 
-    def training_step(self, batch, batch_idx) -> STEP_OUTPUT:
+    def training_step(self, batch, batch_idx) -> Tensor:
         images, labels = batch
         loss = self.forward_logits_loss(images, labels)[1]
         self.log('loss', loss)

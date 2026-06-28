@@ -19,8 +19,6 @@ from typing import Any, Optional, Sequence
 import torch
 import torch.nn.functional as F
 from torch import Tensor
-
-from pytorch_lightning.utilities.types import STEP_OUTPUT
 from timm.models.helpers import named_apply
 
 from strhub.models.base import CrossEntropySystem, CTCSystem
@@ -70,7 +68,7 @@ class TRBA(CrossEntropySystem):
         text = images.new_full([1], self.bos_id, dtype=torch.long)
         return self.model.forward(images, max_length, text)
 
-    def training_step(self, batch, batch_idx) -> STEP_OUTPUT:
+    def training_step(self, batch, batch_idx) -> Tensor:
         images, labels = batch
         encoded = self.tokenizer.encode(labels, self.device)
         inputs = encoded[:, :-1]  # remove <eos>
@@ -118,7 +116,7 @@ class TRBC(CTCSystem):
         # max_label_length is unused in CTC prediction
         return self.model.forward(images, None)
 
-    def training_step(self, batch, batch_idx) -> STEP_OUTPUT:
+    def training_step(self, batch, batch_idx) -> Tensor:
         images, labels = batch
         loss = self.forward_logits_loss(images, labels)[1]
         self.log('loss', loss)

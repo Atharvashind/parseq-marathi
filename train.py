@@ -26,11 +26,25 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, StochasticWeightAveraging
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.strategies import DDPStrategy
-from pytorch_lightning.utilities.model_summary import summarize
+from pytorch_lightning.utilities.model_summary import ModelSummary
 
 from strhub.data.module import SceneTextDataModule
 from strhub.models.base import BaseSystem
 from strhub.models.utils import get_pretrained_weights
+
+
+def _get_autocast_dtype(device_type: str = 'cuda'):
+    """Return the autocast dtype for the given device.
+
+    Wraps both the current and deprecated PyTorch APIs so the code runs on
+    PyTorch 2.0 through 2.x without warnings.
+    """
+    try:
+        # PyTorch >= 2.1
+        return torch.get_autocast_dtype(device_type)
+    except AttributeError:
+        # PyTorch < 2.1 fallback
+        return torch.get_autocast_gpu_dtype()  # type: ignore[attr-defined]
 
 
 # Copied from OneCycleLR
@@ -60,8 +74,9 @@ def main(config: DictConfig):
         gpu = config.trainer.get('accelerator') == 'gpu'
         devices = config.trainer.get('devices', 0)
         if gpu:
-            # Use mixed-precision training
-            config.trainer.precision = 'bf16-mixed' if torch.get_autocast_gpu_dtype() is torch.bfloat16 else '16-mixed'
+            # Use mixed-precision training.
+            # 'bf16-mixed' / '16-mixed' are the PL 2.x precision strings.
+            config.trainer.precision = 'bf16-mixed' if _get_autocast_dtype('cuda') is torch.bfloat16 else '16-mixed'
         if gpu and devices > 1:
             # Use DDP with optimizations
             trainer_strategy = DDPStrategy(find_unused_parameters=False, gradient_as_bucket_view=True)
@@ -79,7 +94,7 @@ def main(config: DictConfig):
     if config.pretrained is not None:
         m = model.model if config.model._target_.endswith('PARSeq') else model
         m.load_state_dict(get_pretrained_weights(config.pretrained))
-    print(summarize(model, max_depth=2))
+    print(ModelSummary(model, max_depth=2))
 
     datamodule: SceneTextDataModule = hydra.utils.instantiate(config.data)
 

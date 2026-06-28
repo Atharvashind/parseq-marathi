@@ -1,0 +1,20 @@
+# @package _global_
+# Marathi scene-text dataset configuration.
+#
+# Expected LMDB layout (relative to data.root_dir):
+#   train/
+#     data.mdb        ← single LMDB  OR
+#     <subset>/       ← one LMDB per subset (build_tree_dataset handles both)
+#       data.mdb
+#   val/
+#     data.mdb
+#   test/
+#     data.mdb
+#
+# Override normalize_unicode=false if your LMDB labels are already NFC-normalised
+# (the dataset loader applies NFC automatically for non-ASCII charsets, so this
+#  is safe to leave at true).
+data:
+  train_dir: marathi
+  remove_whitespace: true
+  normalize_unicode: true

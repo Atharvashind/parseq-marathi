@@ -29,7 +29,20 @@ from strhub.data.utils import CharsetAdapter
 log = logging.getLogger(__name__)
 
 
+def _is_ascii_charset(charset: str) -> bool:
+    """Return True if every character in *charset* is a plain ASCII character."""
+    return all(ord(c) < 128 for c in charset)
+
+
 def build_tree_dataset(root: Union[PurePath, str], *args, **kwargs):
+    """Recursively collect every LMDB store found under *root*.
+
+    Supports two layouts transparently:
+    - Flat:  root/data.mdb  (single LMDB at the root level)
+    - Tree:  root/**/data.mdb  (one or more LMDBs in sub-directories)
+
+    Both layouts may be mixed freely inside the same root.
+    """
     try:
         kwargs.pop('root')  # prevent 'root' from being passed via kwargs
     except KeyError:
@@ -43,6 +56,13 @@ def build_tree_dataset(root: Union[PurePath, str], *args, **kwargs):
         ds_root = str(mdb.parent.absolute())
         dataset = LmdbDataset(ds_root, *args, **kwargs)
         log.info(f'\tlmdb:\t{ds_name}\tnum samples: {len(dataset)}')
+        datasets.append(dataset)
+    # Also handle the case where the LMDB lives directly at *root*
+    # (i.e. root/data.mdb exists but would be missed by the recursive glob
+    # when root itself is the LMDB directory).
+    if not datasets and (root / 'data.mdb').is_file():
+        dataset = LmdbDataset(str(root), *args, **kwargs)
+        log.info(f'\tlmdb:\t.\tnum samples: {len(dataset)}')
         datasets.append(dataset)
     return ConcatDataset(datasets)
 
@@ -94,6 +114,12 @@ class LmdbDataset(Dataset):
 
     def _preprocess_labels(self, charset, remove_whitespace, normalize_unicode, max_label_len, min_image_dim):
         charset_adapter = CharsetAdapter(charset)
+        # Determine whether the charset is pure ASCII.
+        # For ASCII charsets (all existing English datasets) we keep the original
+        # NFKD → ASCII stripping behaviour.
+        # For non-ASCII charsets (e.g. Devanagari / Marathi) we only apply NFC
+        # normalisation so that composed Unicode characters are preserved.
+        ascii_charset = _is_ascii_charset(charset)
         with self._create_env() as env, env.begin() as txn:
             num_samples = int(txn.get('num-samples'.encode()))
             if self.unlabelled:
@@ -105,9 +131,16 @@ class LmdbDataset(Dataset):
                 # Normally, whitespace is removed from the labels.
                 if remove_whitespace:
                     label = ''.join(label.split())
-                # Normalize unicode composites (if any) and convert to compatible ASCII characters
+                # Unicode normalisation:
+                #   ASCII charset  → NFKD + strip non-ASCII (original behaviour,
+                #                    keeps English datasets unchanged).
+                #   Non-ASCII charset → NFC only, so composed characters such as
+                #                    Devanagari matras are preserved intact.
                 if normalize_unicode:
-                    label = unicodedata.normalize('NFKD', label).encode('ascii', 'ignore').decode()
+                    if ascii_charset:
+                        label = unicodedata.normalize('NFKD', label).encode('ascii', 'ignore').decode()
+                    else:
+                        label = unicodedata.normalize('NFC', label)
                 # Filter by length before removing unsupported characters. The original label might be too long.
                 if len(label) > max_label_len:
                     continue

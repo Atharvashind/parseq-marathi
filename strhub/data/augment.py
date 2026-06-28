@@ -12,10 +12,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# NOTE: imgaug has been replaced with NumPy / SciPy equivalents so that this
+# module is compatible with NumPy 2.x.  The public API (rand_augment_transform)
+# is unchanged.
 
 from functools import partial
 
-import imgaug.augmenters as iaa
 import numpy as np
 from PIL import Image, ImageFilter
 
@@ -42,6 +45,10 @@ def _get_param(level, img, max_dim_factor, min_level=1):
     return round(min(level, max_level))
 
 
+# ---------------------------------------------------------------------------
+# Blur ops
+# ---------------------------------------------------------------------------
+
 def gaussian_blur(img, radius, **__):
     radius = _get_param(radius, img, 0.02)
     key = 'gaussian_blur_' + str(radius)
@@ -50,25 +57,46 @@ def gaussian_blur(img, radius, **__):
 
 
 def motion_blur(img, k, **__):
+    """Horizontal motion blur implemented with scipy.ndimage (no imgaug)."""
     k = _get_param(k, img, 0.08, 3) | 1  # bin to odd values
-    key = 'motion_blur_' + str(k)
-    op = _get_op(key, lambda: iaa.MotionBlur(k))
-    return Image.fromarray(op(image=np.asarray(img)))
+    from scipy.ndimage import uniform_filter1d
+    arr = np.asarray(img, dtype=np.float32)
+    if arr.ndim == 2:
+        result = uniform_filter1d(arr, size=k, axis=1, mode='reflect')
+    else:
+        result = np.stack(
+            [uniform_filter1d(arr[..., c], size=k, axis=1, mode='reflect')
+             for c in range(arr.shape[2])],
+            axis=2,
+        )
+    return Image.fromarray(np.clip(result, 0, 255).astype(np.uint8))
 
+
+# ---------------------------------------------------------------------------
+# Noise ops
+# ---------------------------------------------------------------------------
 
 def gaussian_noise(img, scale, **_):
+    """Additive Gaussian noise implemented with NumPy (no imgaug)."""
     scale = _get_param(scale, img, 0.25) | 1  # bin to odd values
-    key = 'gaussian_noise_' + str(scale)
-    op = _get_op(key, lambda: iaa.AdditiveGaussianNoise(scale=scale))
-    return Image.fromarray(op(image=np.asarray(img)))
+    arr = np.asarray(img, dtype=np.float32)
+    rng = np.random.default_rng()
+    noise = rng.normal(0.0, float(scale), arr.shape).astype(np.float32)
+    return Image.fromarray(np.clip(arr + noise, 0, 255).astype(np.uint8))
 
 
 def poisson_noise(img, lam, **_):
+    """Additive Poisson noise implemented with NumPy (no imgaug)."""
     lam = _get_param(lam, img, 0.2) | 1  # bin to odd values
-    key = 'poisson_noise_' + str(lam)
-    op = _get_op(key, lambda: iaa.AdditivePoissonNoise(lam))
-    return Image.fromarray(op(image=np.asarray(img)))
+    arr = np.asarray(img, dtype=np.float32)
+    rng = np.random.default_rng()
+    noise = rng.poisson(float(lam), arr.shape).astype(np.float32)
+    return Image.fromarray(np.clip(arr + noise, 0, 255).astype(np.uint8))
 
+
+# ---------------------------------------------------------------------------
+# RandAugment integration
+# ---------------------------------------------------------------------------
 
 def _level_to_arg(level, _hparams, max):
     level = max * level / auto_augment._LEVEL_DENOM
@@ -98,6 +126,10 @@ auto_augment.NAME_TO_OP.update({
 
 
 def rand_augment_transform(magnitude=5, num_layers=3):
+    """Return a RandAugment transform compatible with torchvision's Compose.
+
+    The signature is identical to the original so all call-sites are unchanged.
+    """
     # These are tuned for magnitude=5, which means that effective magnitudes are half of these values.
     hparams = {
         'rotate_deg': 30,

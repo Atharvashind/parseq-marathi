@@ -18,8 +18,6 @@ from typing import Any, Optional, Sequence
 import torch
 from torch import Tensor
 
-from pytorch_lightning.utilities.types import STEP_OUTPUT
-
 from strhub.models.base import CrossEntropySystem
 from strhub.models.utils import init_weights
 
@@ -72,7 +70,7 @@ class ViTSTR(CrossEntropySystem):
         logits = logits[:, 1:]
         return logits
 
-    def training_step(self, batch, batch_idx) -> STEP_OUTPUT:
+    def training_step(self, batch, batch_idx) -> Tensor:
         images, labels = batch
         loss = self.forward_logits_loss(images, labels)[1]
         self.log('loss', loss)

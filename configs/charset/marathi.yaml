@@ -1,13 +1,5 @@
 # @package _global_
-# Marathi charset – Devanagari script (Unicode block U+0900–U+097F)
-#
-# Includes:
-#   - Vowels (स्वर): अ आ इ ई उ ऊ ऋ ए ऐ ओ औ
-#   - Consonants (व्यंजन): क ख ग ... ह
-#   - Dependent vowel signs (मात्रा) and halant (्)
-#   - Anusvara (ं), Visarga (ः), Chandrabindu (ँ), Nukta (़)
-#   - Devanagari digits (०–९)
-#   - Common punctuation used in Marathi
-#   - ASCII digits and basic Latin letters retained for mixed-script words
+
 model:
-  charset_train: "अआइईउऊऋएऐओऔअंअःकखगघङचछजझञटठडढणतथदधनपफबभमयरलवशषसहळक्षज्ञॅॆॉॊािीुूृेैोौ्ँंःऽ़ॐ०१२३४५६७८९"
+  charset_train: ",-./:|ँंःअआइईउऊएऐऑओऔकखगघचछजझञटठडढणतथदधनपफबभमयरऱलळवशषसह़ािीुूृॅेैॉोौ्०१२३४५६७८९ॲ"
+  charset_test: ",-./:|ँंःअआइईउऊएऐऑओऔकखगघचछजझञटठडढणतथदधनपफबभमयरऱलळवशषसह़ािीुूृॅेैॉोौ्०१२३४५६७८९ॲ"

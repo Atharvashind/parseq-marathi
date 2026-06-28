@@ -197,14 +197,90 @@ warning and may be removed in a later Ray release.
 
 ---
 
+## 6. Safe Multilingual Pretrained Weight Loading
+
+**Files modified:** `strhub/models/utils.py`, `train.py`
+
+### Problem
+`nn.Module.load_state_dict()` in strict mode raises a `RuntimeError` when
+any tensor in the checkpoint has a different shape than the current model.
+This is always the case when fine-tuning on a different charset (e.g. English
+→ Marathi): the classifier/output head dimension equals
+`len(charset) + num_special_tokens`, so it changes with every distinct
+character set. The encoder, decoder, and all other layers are fully reusable.
+
+### New function: `safe_load_pretrained(model, experiment)`
+
+Added to `strhub/models/utils.py`.
+
+**Algorithm (explicit filtering — no `strict=False`)**
+
+1. Download the checkpoint via `get_pretrained_weights(experiment)`.
+2. Snapshot the current model's `state_dict()`.
+3. Walk every key in the checkpoint:
+   - key absent from the model → **skipped**
+   - tensor shapes differ → **skipped** (classifier head for multilingual case)
+   - shapes match → **loaded**
+4. Identify keys present in the model but absent from the checkpoint → **missing**.
+5. Merge loaded tensors into a copy of the current state dict (unmatched keys
+   keep their randomly-initialised values).
+6. Call `load_state_dict(updated_state, strict=True)` — PyTorch still
+   validates the final result; no silent failures.
+7. Print a clean summary and return `{"loaded": [...], "skipped": [...], "missing": [...]}`.
+
+**Why `strict=False` is not used**
+
+`strict=False` silently ignores *all* missing and unexpected keys. Using an
+explicit allow-list instead means any unexpected structural difference
+(e.g. a refactored layer name) is visible in the `skipped`/`missing`
+lists rather than hidden.
+
+### Behaviour by scenario
+
+| Scenario | Loaded | Skipped |
+|---|---|---|
+| English pretrained → English model (same charset) | All layers | 0 |
+| English pretrained → Marathi model (different charset) | Encoder + decoder | `head.weight`, `head.bias` |
+
+### Changes to `train.py`
+
+- Replaced `from strhub.models.utils import get_pretrained_weights` with
+  `from strhub.models.utils import safe_load_pretrained`.
+- Replaced `m.load_state_dict(get_pretrained_weights(config.pretrained))`
+  with `safe_load_pretrained(m, config.pretrained)`.
+
+### Changes to `create_model()` in `strhub/models/utils.py`
+
+- Replaced `m.load_state_dict(get_pretrained_weights(experiment))` with
+  `safe_load_pretrained(m, experiment)` so the programmatic API
+  (`hubconf.py`, `bench.py`) also benefits from safe loading.
+
+### Console output example (multilingual fine-tuning)
+
+```
+========================================
+============ Pretrained Loading ========
+========================================
+  Loaded layers : 287
+  Skipped layers: 2
+  Skipped:
+    head.weight
+    head.bias
+  Pretrained initialization completed.
+========================================
+```
+
+---
+
 ## Summary of Modified Files
 
 | File | Change |
 |---|---|
 | `strhub/data/dataset.py` | Unicode auto-detection; flat LMDB layout support |
 | `strhub/data/augment.py` | imgaug replaced with NumPy/SciPy; public API unchanged |
-| `train.py` | `summarize` → `ModelSummary`; autocast dtype compat helper |
+| `train.py` | `summarize` → `ModelSummary`; autocast compat helper; `safe_load_pretrained` |
 | `tune.py` | `gpus` → `accelerator` check; integer precision → `'16-mixed'`; `local_dir` → `storage_path` |
+| `strhub/models/utils.py` | Added `safe_load_pretrained()`; updated `create_model()` |
 | `strhub/models/base.py` | Removed `STEP_OUTPUT` import; updated return type annotations |
 | `strhub/models/parseq/system.py` | Removed `STEP_OUTPUT`; `training_step` → `Tensor` |
 | `strhub/models/abinet/system.py` | Removed `STEP_OUTPUT`; `training_step` → `Tensor` |

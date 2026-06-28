@@ -3,8 +3,8 @@
 #
 # Expected LMDB layout (relative to data.root_dir):
 #   train/
-#     data.mdb        ← single LMDB  OR
-#     <subset>/       ← one LMDB per subset (build_tree_dataset handles both)
+#     data.mdb        <- single LMDB  OR
+#     <subset>/       <- one LMDB per subset (build_tree_dataset handles both)
 #       data.mdb
 #   val/
 #     data.mdb
@@ -14,6 +14,10 @@
 # Override normalize_unicode=false if your LMDB labels are already NFC-normalised
 # (the dataset loader applies NFC automatically for non-ASCII charsets, so this
 #  is safe to leave at true).
+model:
+  charset_train: ",-./:|ँंःअआइईउऊएऐऑओऔकखगघचछजझञटठडढणतथदधनपफबभमयरऱलळवशषसह़ािीुूृॅेैॉोौ्०१२३४५६७८९ॲ"
+  charset_test: ",-./:|ँंःअआइईउऊएऐऑओऔकखगघचछजझञटठडढणतथदधनपफबभमयरऱलळवशषसह़ािीुूृॅेैॉोौ्०१२३४५६७८९ॲ"
+
 data:
   train_dir: "."
   remove_whitespace: true

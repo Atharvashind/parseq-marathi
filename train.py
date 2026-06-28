@@ -30,7 +30,7 @@ from pytorch_lightning.utilities.model_summary import ModelSummary
 
 from strhub.data.module import SceneTextDataModule
 from strhub.models.base import BaseSystem
-from strhub.models.utils import get_pretrained_weights
+from strhub.models.utils import safe_load_pretrained
 
 
 def _get_autocast_dtype(device_type: str = 'cuda'):
@@ -90,10 +90,14 @@ def main(config: DictConfig):
         assert config.model.perm_num % 2 == 0, 'perm_num should be even if perm_mirrored = True'
 
     model: BaseSystem = hydra.utils.instantiate(config.model)
-    # If specified, use pretrained weights to initialize the model
+    # If specified, use pretrained weights to initialise the model.
+    # safe_load_pretrained() skips classifier layers whose shape does not match
+    # the current model (e.g. when fine-tuning on a different charset such as
+    # Marathi) so that the encoder/decoder weights are always reused even when
+    # the output head must be re-initialised from scratch.
     if config.pretrained is not None:
         m = model.model if config.model._target_.endswith('PARSeq') else model
-        m.load_state_dict(get_pretrained_weights(config.pretrained))
+        safe_load_pretrained(m, config.pretrained)
     print(ModelSummary(model, max_depth=2))
 
     datamodule: SceneTextDataModule = hydra.utils.instantiate(config.data)

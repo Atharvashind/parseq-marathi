@@ -47,6 +47,74 @@ class BatchResult:
 EPOCH_OUTPUT = list[dict[str, BatchResult]]
 
 
+# Logical groupings of inner-model submodules for freeze / LR control.
+# Each key is the user-facing config name; the value is the attribute name on
+# the inner nn.Module (self.model for PARSeq-like systems).
+_COMPONENT_MAP: dict[str, str] = {
+    'encoder':    'encoder',
+    'decoder':    'decoder',
+    'head':       'head',
+    'text_embed': 'text_embed',
+}
+
+# Components treated as the "backbone" (shared visual/sequential features).
+_BACKBONE_COMPONENTS = ('encoder', 'decoder')
+# Components treated as the "head" (task-specific classifier + embeddings).
+_HEAD_COMPONENTS      = ('head', 'text_embed')
+
+
+def _apply_freeze(inner_model: torch.nn.Module, freeze_cfg: dict[str, bool]) -> None:
+    """Set ``requires_grad`` on submodules of *inner_model* according to *freeze_cfg*.
+
+    Parameters
+    ----------
+    inner_model:
+        The bare ``nn.Module`` (e.g. ``system.model`` for PARSeq).
+    freeze_cfg:
+        Dict mapping component name → True (freeze) / False (keep trainable).
+        Missing keys default to False (trainable).
+    """
+    for cfg_key, module_attr in _COMPONENT_MAP.items():
+        if not freeze_cfg.get(cfg_key, False):
+            continue
+        module = getattr(inner_model, module_attr, None)
+        if module is None:
+            continue
+        for param in module.parameters():
+            param.requires_grad_(False)
+
+
+def _print_finetune_summary(
+    freeze_cfg: dict[str, bool],
+    backbone_lr: float | None,
+    head_lr: float | None,
+    default_lr: float,
+) -> None:
+    """Print a one-time fine-tuning configuration table."""
+    sep = '=' * 48
+    print(sep)
+    print('Fine-tuning Configuration'.center(48))
+    print(sep)
+
+    labels = {
+        'encoder':    'Encoder    ',
+        'decoder':    'Decoder    ',
+        'head':       'Head       ',
+        'text_embed': 'Text Embed ',
+    }
+    for cfg_key, label in labels.items():
+        state = 'Frozen' if freeze_cfg.get(cfg_key, False) else 'Trainable'
+        print(f'  {label} : {state}')
+
+    if backbone_lr is not None and head_lr is not None:
+        print(f'  Backbone LR : {backbone_lr}')
+        print(f'  Head LR     : {head_lr}')
+    else:
+        print(f'  Learning Rate : {default_lr}')
+
+    print(sep)
+
+
 class BaseSystem(pl.LightningModule, ABC):
 
     def __init__(
@@ -57,6 +125,10 @@ class BaseSystem(pl.LightningModule, ABC):
         lr: float,
         warmup_pct: float,
         weight_decay: float,
+        # Optional staged fine-tuning controls.  Both default to None so that
+        # existing configs that do not specify them continue to work unchanged.
+        backbone_lr: Optional[float] = None,
+        head_lr: Optional[float] = None,
     ) -> None:
         super().__init__()
         self.tokenizer = tokenizer
@@ -65,6 +137,8 @@ class BaseSystem(pl.LightningModule, ABC):
         self.lr = lr
         self.warmup_pct = warmup_pct
         self.weight_decay = weight_decay
+        self.backbone_lr = backbone_lr
+        self.head_lr = head_lr
         self.outputs: EPOCH_OUTPUT = []
 
     @abstractmethod
@@ -95,15 +169,69 @@ class BaseSystem(pl.LightningModule, ABC):
         """
         raise NotImplementedError
 
-    def configure_optimizers(self):
+    def _lr_scale(self) -> float:
+        """Compute the linear LR scale factor (DDP + grad accumulation)."""
         agb = self.trainer.accumulate_grad_batches
-        # Linear scaling so that the effective learning rate is constant regardless of the number of GPUs used with DDP.
-        lr_scale = agb * math.sqrt(self.trainer.num_devices) * self.batch_size / 256.0
-        lr = lr_scale * self.lr
-        optim = create_optimizer_v2(self, 'adamw', lr, self.weight_decay)
-        sched = OneCycleLR(
-            optim, lr, self.trainer.estimated_stepping_batches, pct_start=self.warmup_pct, cycle_momentum=False
-        )
+        return agb * math.sqrt(self.trainer.num_devices) * self.batch_size / 256.0
+
+    def configure_optimizers(self):
+        scale = self._lr_scale()
+        lr = scale * self.lr
+
+        use_diff_lr = (self.backbone_lr is not None) and (self.head_lr is not None)
+
+        if use_diff_lr:
+            # Build explicit parameter groups so each component gets its own LR.
+            # Frozen parameters (requires_grad=False) are automatically excluded
+            # by create_optimizer_v2 / AdamW since they have no gradient.
+            inner = getattr(self, 'model', None)
+            if inner is not None:
+                backbone_params = [
+                    p for comp in _BACKBONE_COMPONENTS
+                    for p in getattr(inner, comp, torch.nn.Module()).parameters()
+                    if p.requires_grad
+                ]
+                head_params = [
+                    p for comp in _HEAD_COMPONENTS
+                    for p in getattr(inner, comp, torch.nn.Module()).parameters()
+                    if p.requires_grad
+                ]
+                # Any parameters not covered by the two groups (e.g. pos_queries,
+                # dropout) fall back to the global lr.
+                grouped_ids = {id(p) for p in backbone_params + head_params}
+                other_params = [
+                    p for p in self.parameters()
+                    if p.requires_grad and id(p) not in grouped_ids
+                ]
+                param_groups = []
+                if backbone_params:
+                    param_groups.append({'params': backbone_params,
+                                         'lr': scale * self.backbone_lr})
+                if head_params:
+                    param_groups.append({'params': head_params,
+                                         'lr': scale * self.head_lr})
+                if other_params:
+                    param_groups.append({'params': other_params, 'lr': lr})
+            else:
+                # Fallback: no inner model — treat all params uniformly.
+                param_groups = [{'params': list(self.parameters()), 'lr': lr}]
+
+            # Use the maximum LR for the scheduler's max_lr so that no group
+            # exceeds its configured ceiling during the warm-up phase.
+            max_lr = [g['lr'] for g in param_groups]
+            optim = torch.optim.AdamW(param_groups, weight_decay=self.weight_decay)
+            sched = OneCycleLR(
+                optim, max_lr, self.trainer.estimated_stepping_batches,
+                pct_start=self.warmup_pct, cycle_momentum=False,
+            )
+        else:
+            # Original single-LR path — unchanged from the upstream repository.
+            optim = create_optimizer_v2(self, 'adamw', lr, self.weight_decay)
+            sched = OneCycleLR(
+                optim, lr, self.trainer.estimated_stepping_batches,
+                pct_start=self.warmup_pct, cycle_momentum=False,
+            )
+
         return {'optimizer': optim, 'lr_scheduler': {'scheduler': sched, 'interval': 'step'}}
 
     def optimizer_zero_grad(self, epoch: int, batch_idx: int, optimizer: Optimizer) -> None:
@@ -183,10 +311,12 @@ class BaseSystem(pl.LightningModule, ABC):
 class CrossEntropySystem(BaseSystem):
 
     def __init__(
-        self, charset_train: str, charset_test: str, batch_size: int, lr: float, warmup_pct: float, weight_decay: float
+        self, charset_train: str, charset_test: str, batch_size: int, lr: float, warmup_pct: float, weight_decay: float,
+        backbone_lr: Optional[float] = None, head_lr: Optional[float] = None,
     ) -> None:
         tokenizer = Tokenizer(charset_train)
-        super().__init__(tokenizer, charset_test, batch_size, lr, warmup_pct, weight_decay)
+        super().__init__(tokenizer, charset_test, batch_size, lr, warmup_pct, weight_decay,
+                         backbone_lr=backbone_lr, head_lr=head_lr)
         self.bos_id = tokenizer.bos_id
         self.eos_id = tokenizer.eos_id
         self.pad_id = tokenizer.pad_id
@@ -204,10 +334,12 @@ class CrossEntropySystem(BaseSystem):
 class CTCSystem(BaseSystem):
 
     def __init__(
-        self, charset_train: str, charset_test: str, batch_size: int, lr: float, warmup_pct: float, weight_decay: float
+        self, charset_train: str, charset_test: str, batch_size: int, lr: float, warmup_pct: float, weight_decay: float,
+        backbone_lr: Optional[float] = None, head_lr: Optional[float] = None,
     ) -> None:
         tokenizer = CTCTokenizer(charset_train)
-        super().__init__(tokenizer, charset_test, batch_size, lr, warmup_pct, weight_decay)
+        super().__init__(tokenizer, charset_test, batch_size, lr, warmup_pct, weight_decay,
+                         backbone_lr=backbone_lr, head_lr=head_lr)
         self.blank_id = tokenizer.blank_id
 
     def forward_logits_loss(self, images: Tensor, labels: list[str]) -> tuple[Tensor, Tensor, int]:

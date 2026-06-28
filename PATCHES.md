@@ -402,6 +402,107 @@ Predictions are NFC-normalised before printing and saving.
 
 ---
 
+## 9. Configurable Staged Fine-tuning
+
+**Files modified:** `strhub/models/base.py`, `strhub/models/parseq/system.py`
+**New file:** `configs/experiment/finetune_marathi.yaml`
+
+No changes to the training loop, loss computation, tokenizer, decoding,
+inference, checkpointing, scheduler, validation, or testing.
+
+### Design
+
+All logic lives in `base.py` as module-level helpers and a small extension to
+`BaseSystem.__init__` and `configure_optimizers`. `PARSeq.__init__` receives
+the new options via explicit parameters (before `**kwargs`) and applies them
+after building `self.model`. Every other model (ABINet, CRNN, ViTSTR, TRBA)
+is unaffected — they absorb unknown keys via `**kwargs`.
+
+### New module-level symbols in `strhub/models/base.py`
+
+| Symbol | Kind | Purpose |
+|---|---|---|
+| `_COMPONENT_MAP` | `dict` | Maps config key → `nn.Module` attribute name |
+| `_BACKBONE_COMPONENTS` | `tuple` | `('encoder', 'decoder')` — share `backbone_lr` |
+| `_HEAD_COMPONENTS` | `tuple` | `('head', 'text_embed')` — share `head_lr` |
+| `_apply_freeze(inner, cfg)` | function | Sets `requires_grad=False` on frozen submodules |
+| `_print_finetune_summary(...)` | function | Prints the one-time startup config table |
+
+### Changes to `BaseSystem`
+
+- `__init__` accepts `backbone_lr=None` and `head_lr=None`. When both are
+  `None` (the default) behaviour is **identical** to the original.
+- `configure_optimizers` branches on whether both differential LRs are set:
+  - **Not set (default):** original single-LR path via `create_optimizer_v2` — unchanged.
+  - **Set:** three `AdamW` parameter groups (backbone, head, other), each with
+    its own scaled LR. `OneCycleLR` receives a list of `max_lr` values so every
+    group warms up to its own peak independently.
+- `_lr_scale()` helper factored out to avoid repeating the DDP scaling formula.
+
+### Changes to `CrossEntropySystem` / `CTCSystem`
+
+Both now forward `backbone_lr` and `head_lr` to `BaseSystem`. Signatures
+remain fully backward-compatible (both kwargs default to `None`).
+
+### Changes to `PARSeq.__init__`
+
+- `freeze: Optional[dict] = None`, `backbone_lr`, `head_lr` added as explicit
+  parameters before `**kwargs`.
+- After `self.model` is built, `_apply_freeze(self.model, self._freeze_cfg)` is
+  called — no-op when `freeze` is absent or all-false.
+- `on_train_start` prints the fine-tuning summary on rank 0 only (no duplicate
+  output in DDP multi-GPU runs).
+
+### New config: `configs/experiment/finetune_marathi.yaml`
+
+Ready-to-use preset:
+
+```bash
+python train.py \
+  experiment=finetune_marathi \
+  charset=marathi \
+  dataset=marathi \
+  pretrained=parseq
+```
+
+Defaults: encoder frozen, decoder/head/text_embed trainable,
+`backbone_lr=1e-5`, `head_lr=5e-4`.
+
+### Startup summary example
+
+```
+================================================
+       Fine-tuning Configuration
+================================================
+  Encoder     : Frozen
+  Decoder     : Trainable
+  Head        : Trainable
+  Text Embed  : Trainable
+  Backbone LR : 1e-05
+  Head LR     : 0.0005
+================================================
+```
+
+### Backward compatibility
+
+All three experiment variants work via Hydra CLI overrides with zero code changes:
+
+```bash
+# Experiment 1 — freeze encoder + decoder, differential LRs
+python train.py experiment=finetune_marathi \
+  model.freeze.encoder=true model.freeze.decoder=true \
+  model.backbone_lr=1e-5 model.head_lr=5e-4
+
+# Experiment 2 — freeze encoder only
+python train.py experiment=finetune_marathi \
+  model.freeze.encoder=true model.freeze.decoder=false
+
+# Experiment 3 — train everything (original behaviour unchanged)
+python train.py charset=marathi dataset=marathi pretrained=parseq
+```
+
+---
+
 ## Summary of Modified Files
 
 | File | Change |
@@ -410,9 +511,9 @@ Predictions are NFC-normalised before printing and saving.
 | `strhub/data/augment.py` | imgaug replaced with NumPy/SciPy; public API unchanged |
 | `train.py` | `summarize` → `ModelSummary`; autocast compat helper; `safe_load_pretrained` |
 | `tune.py` | `gpus` → `accelerator` check; integer precision → `'16-mixed'`; `local_dir` → `storage_path` |
-| `strhub/models/utils.py` | Added `_extract_state_dict()`, `_strip_prefix()`, improved `safe_load_pretrained()`; updated `create_model()` |
-| `strhub/models/base.py` | Removed `STEP_OUTPUT` import; updated return type annotations |
-| `strhub/models/parseq/system.py` | Removed `STEP_OUTPUT`; `training_step` → `Tensor` |
+| `strhub/models/utils.py` | Added `_extract_state_dict()`, `_strip_prefix()`, `safe_load_pretrained()`; updated `create_model()` |
+| `strhub/models/base.py` | `STEP_OUTPUT` removed; staged fine-tuning helpers; `configure_optimizers` extension |
+| `strhub/models/parseq/system.py` | `STEP_OUTPUT` removed; `freeze`/`backbone_lr`/`head_lr` params; `on_train_start` |
 | `strhub/models/abinet/system.py` | Removed `STEP_OUTPUT`; `training_step` → `Tensor` |
 | `strhub/models/crnn/system.py` | Removed `STEP_OUTPUT`; `training_step` → `Tensor` |
 | `strhub/models/vitstr/system.py` | Removed `STEP_OUTPUT`; `training_step` → `Tensor` |
@@ -424,6 +525,9 @@ Predictions are NFC-normalised before printing and saving.
 | `requirements/constraints.txt` | Removed `imgaug` entry; updated `# via` annotations |
 | `configs/charset/marathi.yaml` | **New** — Devanagari charset for Marathi |
 | `configs/dataset/marathi.yaml` | **New** — Marathi dataset config |
+| `configs/experiment/finetune_marathi.yaml` | **New** — staged fine-tuning preset |
 | `tools/evaluate_marathi.py` | **New** — LMDB evaluation with metrics + CSV export |
 | `tools/infer_marathi.py` | **New** — single-image and folder inference + CSV export |
+| `tests/__init__.py` | **New** — test package marker |
+| `tests/test_safe_pretrained.py` | **New** — 33 offline tests for `safe_load_pretrained` |
 | `PATCHES.md` | **New** — this file |

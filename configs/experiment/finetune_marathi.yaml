@@ -1,0 +1,40 @@
+# @package _global_
+# Staged fine-tuning configuration for Marathi (Devanagari) OCR.
+#
+# Experiment: freeze the visual encoder, train everything else with differential LRs.
+# To run:
+#   python train.py \
+#     experiment=finetune_marathi \
+#     charset=marathi \
+#     dataset=marathi \
+#     pretrained=parseq
+#
+# Adjust freeze flags and learning rates per experiment:
+#
+#   Experiment 1 — freeze encoder + decoder, train head only:
+#     model.freeze.encoder=true  model.freeze.decoder=true
+#     model.backbone_lr=1e-5     model.head_lr=5e-4
+#
+#   Experiment 2 — freeze encoder only:
+#     model.freeze.encoder=true
+#
+#   Experiment 3 — train everything (default behaviour, identical to no freeze):
+#     (just omit any freeze/lr overrides)
+defaults:
+  - override /model: parseq
+
+model:
+  # --- Layer freezing ---
+  # Set a component to true to freeze it (requires_grad=False).
+  # Omitting this section entirely preserves the original trainable behaviour.
+  freeze:
+    encoder:    true   # freeze the ViT backbone — reuse English visual features
+    decoder:    false  # keep decoder trainable for Marathi sequence modelling
+    head:       false  # always train the head (it was re-initialised for Marathi)
+    text_embed: false  # always train embeddings for the new charset
+
+  # --- Differential learning rates ---
+  # encoder + decoder use backbone_lr; head + text_embed use head_lr.
+  # Set both to null (or omit entirely) to use the single global lr instead.
+  backbone_lr: 1.0e-5
+  head_lr:     5.0e-4

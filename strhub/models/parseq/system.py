@@ -23,7 +23,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from strhub.models.base import CrossEntropySystem
+from strhub.models.base import CrossEntropySystem, _apply_freeze, _print_finetune_summary
 
 from .model import PARSeq as Model
 
@@ -54,9 +54,14 @@ class PARSeq(CrossEntropySystem):
         decode_ar: bool,
         refine_iters: int,
         dropout: float,
+        # Staged fine-tuning options — both optional; None preserves original behaviour.
+        freeze: Optional[dict] = None,
+        backbone_lr: Optional[float] = None,
+        head_lr: Optional[float] = None,
         **kwargs: Any,
     ) -> None:
-        super().__init__(charset_train, charset_test, batch_size, lr, warmup_pct, weight_decay)
+        super().__init__(charset_train, charset_test, batch_size, lr, warmup_pct, weight_decay,
+                         backbone_lr=backbone_lr, head_lr=head_lr)
         self.save_hyperparameters()
 
         self.model = Model(
@@ -76,11 +81,23 @@ class PARSeq(CrossEntropySystem):
             dropout,
         )
 
+        # Apply layer freezing if requested.  A missing or empty freeze dict is a
+        # no-op so that existing configs continue to work without any changes.
+        self._freeze_cfg: dict[str, bool] = dict(freeze) if freeze else {}
+        if self._freeze_cfg:
+            _apply_freeze(self.model, self._freeze_cfg)
+
         # Perm/attn mask stuff
         self.rng = np.random.default_rng()
         self.max_gen_perms = perm_num // 2 if perm_mirrored else perm_num
         self.perm_forward = perm_forward
         self.perm_mirrored = perm_mirrored
+
+    def on_train_start(self) -> None:
+        """Print the fine-tuning summary once before the first training step."""
+        # Only print from rank 0 to avoid duplicate output in DDP.
+        if self.global_rank == 0:
+            _print_finetune_summary(self._freeze_cfg, self.backbone_lr, self.head_lr, self.lr)
 
     def forward(self, images: Tensor, max_length: Optional[int] = None) -> Tensor:
         return self.model.forward(self.tokenizer, images, max_length)
